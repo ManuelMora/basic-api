@@ -1,0 +1,87 @@
+# template.yml
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  API de FastAPI serverless desplegada en AWS Lambda usando CloudFormation.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: FastAPIApp
+    Description: Nombre base para los recursos del proyecto.
+  PythonRuntime:
+    Type: String
+    Default: python3.11
+    Description: Versión de Python para la función Lambda.
+
+Resources:
+  # 1. Rol de Ejecución para la Lambda
+  # Este rol le da a la función permisos para ejecutarse y escribir logs en CloudWatch.
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-Function:*'
+  
+  # 2. La Función Lambda
+  # Aquí se define el código, el handler (main.handler de Mangum) y el rol.
+  FastAPILambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-Function'
+      Handler: main.handler # El handler de Mangum
+      Runtime: !Ref PythonRuntime
+      Code:
+        # Esto es un placeholder. El pipeline lo actualizará con el .zip
+        ZipFile: |
+          # El código será subido por la acción de GitHub
+          def handler(event, context):
+            return {
+              "statusCode": 200,
+              "body": "Función inicial, reemplazada por el pipeline."
+            }
+      MemorySize: 256 # Memoria asignada, puedes ajustarla
+      Timeout: 10 # Timeout en segundos, puedes ajustarlo
+      Role: !GetAtt LambdaExecutionRole.Arn
+      
+  # 3. API Gateway (para exponer la Lambda vía HTTP)
+  FastAPILambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt FastAPILambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*'
+  
+  # Definición de la URL pública para la función (Function URL o API Gateway)
+  # Usaremos Function URL por su simplicidad en este ejemplo
+  FastAPILambdaFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt FastAPILambdaFunction.Arn
+      AuthType: NONE # Sin autenticación, para acceso público (Cuidado en producción)
+      
+Outputs:
+  LambdaFunctionArn:
+    Description: "ARN de la función Lambda"
+    Value: !GetAtt FastAPILambdaFunction.Arn
+  FastAPIEndpoint:
+    Description: "URL del endpoint de la API"
+    Value: !GetAtt FastAPILambdaFunctionUrl.FunctionUrl

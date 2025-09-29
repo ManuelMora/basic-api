@@ -1,0 +1,88 @@
+# .github/workflows/deploy.yml
+
+name: Despliegue de FastAPI a AWS Lambda
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1 # <-- Asegúrate de que coincida con tu región
+  STACK_NAME: FastAPI-Stack-Prod # <-- Nombre del stack de CloudFormation
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' 
+
+      # Analisis SAST con bandit
+      - name: Ejecutar Análisis SAST con Bandit
+        run: |
+          echo "Instalando Bandit..."
+          pip install bandit
+          echo "Ejecutando Bandit en main.py. La opción '-r .' escanea recursivamente el directorio."
+          # -r . : Escanea el directorio actual recursivamente
+          # -lll: Establece el nivel de confianza (confidence) y la gravedad (severity) en BAJO (Low)
+          #       Ajusta esto según la tolerancia de tu equipo.
+          # -x package: Excluye el directorio 'package' si ya existe, para no escanear dependencias.
+          # --json: Formato de salida JSON (opcional, útil para reportes)
+          bandit -r . -lll -x package
+        # Si Bandit encuentra problemas de seguridad de gravedad alta/media,
+        # su código de salida no será 0, lo que causará que el paso falle
+        # y detenga el workflow.
+
+      # 1. Configurar las credenciales de AWS
+      - name: Configurar credenciales de AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Permisos IAM para este usuario: cloudformation:*, lambda:*, iam:* (para crear roles)
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 2. Instalación de dependencias y empaquetado
+      # ¡Este paso es crucial, el archivo .zip es lo que CloudFormation subirá!
+      - name: Instalar dependencias y empaquetar
+        id: package_step # Agregamos un ID para referenciar la salida
+        run: |
+          # ... (El mismo código de empaquetado de antes) ...
+          mkdir package
+          pip install -r requirements.txt -t package
+          cp main.py package/
+          cd package
+          zip -r ../deployment_package.zip .
+          cd ..
+          echo "Archivo de despliegue creado."
+          ls -l deployment_package.zip
+
+      # 3. Subir el paquete de código a S3
+      # CloudFormation requiere que el código esté en S3 para el despliegue.
+      - name: Subir paquete a S3 (Requerido por CloudFormation)
+        id: s3_upload
+        uses: aws-actions/aws-cli@v4
+        with:
+          # La función CloudFormation 'package' requiere un bucket para subir el código.
+          # Usaremos la función 's3 cp' directamente para este ejemplo, asumiendo un bucket existente.
+          cli-command: s3 cp deployment_package.zip s3://mi-bucket-de-despliegue/lambda-code.zip # <-- ¡IMPORTANTE! Reemplaza 'mi-bucket-de-despliegue'
+          
+      # 4. Desplegar el Stack de CloudFormation
+      # Creamos o actualizamos la infraestructura usando el template y el código de S3.
+      - name: Desplegar Stack de CloudFormation
+        uses: aws-actions/aws-cli@v4
+        with:
+          cli-command: cloudformation deploy 
+          arguments: |
+            --template-file template.yml
+            --stack-name ${{ env.STACK_NAME }}
+            --capabilities CAPABILITY_NAMED_IAM
+            --parameter-overrides ProjectName=FastAPIApp
+            --s3-location s3://mi-bucket-de-despliegue/lambda-code.zip # <-- ¡IMPORTANTE! Reemplaza 'mi-bucket-de-despliegue'
